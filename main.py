@@ -89,6 +89,7 @@ def main():
     streamer = None
     silence_counter = 0
     speak_counter = 0
+    speaking_baseline_ready = False
 
     def exit_handler(signum, frame):
         nonlocal exited
@@ -144,7 +145,11 @@ def main():
             try:
                 llm_text = result_queue.get_nowait()
                 if llm_text:
-                    interrupt_detector.freeze_baseline()
+                    # TTS başladıktan hemen önceki baseline yerine, TTS sırasında
+                    # mikrofon yankı seviyesine göre grace biterken baseline'i
+                    # ayarlayacağız.
+                    interrupt_detector.reset()
+                    speaking_baseline_ready = False
                     tts_player.speak_async(llm_text)
                     state = State.SPEAKING
                     log_state("speaking")
@@ -159,18 +164,28 @@ def main():
             if not tts_player.is_robot_speaking:
                 drain_mic_buffer(stream)
                 interrupt_detector.reset()
+                speaking_baseline_ready = False
                 state = State.IDLE
                 before_chunks.clear()
                 log_state("not_hear")
             elif tts_player.is_audio_playing:
                 elapsed = time.time() - tts_player.get_start_time()
                 if elapsed > INTERRUPT_GRACE_PERIOD:
+                    if not speaking_baseline_ready:
+                        # Grace bittiğinde robotun hoparlörden oluşturduğu yankı seviyesini
+                        # baseline olarak dondurup, yanlış interruptları azaltıyoruz.
+                        interrupt_detector.freeze_baseline()
+                        speaking_baseline_ready = True
                     if interrupt_detector.update(raw):
                         tts_player.stop()
                         drain_mic_buffer(stream)
                         state = State.IDLE
                         before_chunks.clear()
+                        speaking_baseline_ready = False
                         log_state("ready")
+                else:
+                    # Grace döneminde interrupt detection kapalı; sadece baseline ölçüyoruz.
+                    interrupt_detector.feed_rolling(raw)
 
 
 if __name__ == "__main__":

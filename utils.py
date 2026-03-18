@@ -15,10 +15,12 @@ NUM_SAMPLES = 1536
 
 SPEAK_THRESHOLD = 0.5
 
-INTERRUPT_RMS_MULTIPLIER = 1.5
+# Echo (hoparlörden mikrofona yansıma) daha yüksek olduğu senaryolarda
+# robota kendi sesinden dolayı yanlış interrupt atılmasını azaltır.
+INTERRUPT_RMS_MULTIPLIER = 2.5
 INTERRUPT_VAD_THRESHOLD = 0.7
-INTERRUPT_HOLD = 2
-INTERRUPT_GRACE_PERIOD = 0.8
+INTERRUPT_HOLD = 3
+INTERRUPT_GRACE_PERIOD = 1.0
 BASELINE_WINDOW = 40
 
 
@@ -52,6 +54,10 @@ class InterruptDetector:
     def reset(self):
         self._counter = 0
         self._frozen_baseline = None
+        # Rolling pencereyi de temizle ki bir sonraki freeze_baseline,
+        # özellikle TTS başlangıcından sonraki grace dönemindeki seviyeye
+        # daha doğru dayansın.
+        self._rolling.clear()
 
     def feed_rolling(self, audio_chunk: bytes):
         self._rolling.append(rms(audio_chunk))
@@ -73,7 +79,7 @@ class InterruptDetector:
             f"thr={threshold:.1f} vad={current_vad:.3f}",
             file=sys.stderr,
             flush=True,
-            end="\r",
+            # end="\r",
         )
 
         if rms_ok and vad_ok:
