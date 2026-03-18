@@ -59,6 +59,14 @@ class InterruptDetector:
         # daha doğru dayansın.
         self._rolling.clear()
 
+    def reset_counter(self):
+        """
+        Sadece ardışık sayaç sıfırlar.
+
+        Not: `freeze_baseline()` tarafından dondurulmuş baseline'i bozmaz.
+        """
+        self._counter = 0
+
     def feed_rolling(self, audio_chunk: bytes):
         self._rolling.append(rms(audio_chunk))
 
