@@ -101,6 +101,10 @@ def main():
     speaking_echo_debug_lines = 0
     speaking_post_mic_rms: list[float] = []
     speaking_post_ref_rms: list[float] = []
+    # speaking_echo_gain'i konuşma boyunca küçük bir drift olursa telafi etmek için
+    # "echo-like" kabul edilen chunk'lardan sürekli güncelliyoruz.
+    speaking_echo_gain_adapt_mic_rms: list[float] = []
+    speaking_echo_gain_adapt_ref_rms: list[float] = []
 
     # Robot echo ile mikrofondaki sinyal benzerliği çok yüksekse interrupt
     # bastırılır (robotun kendi sesini insan gibi kesmemesi için).
@@ -120,6 +124,11 @@ def main():
     # TTS başladıktan hemen sonra, birkaç chunk boyunca interrupt detection yerine
     # echo-gain'i daha doğru tahmin etmeye odaklanırız.
     ECHO_POST_CALIB_CHUNKS = 3
+
+    # Konuşma sırasında, yankı olduğuna güvenince (best_err eşiğin altında) speaking_echo_gain
+    # küçük aralıklarla yeniden tahmin edilerek yüksek mic gain senaryolarında drift azaltılır.
+    ECHO_GAIN_ADAPT_MIN_POINTS = 5
+    ECHO_GAIN_ADAPT_MAX_POINTS = 20
 
     ECHO_DEBUG_MAX_LINES = 25
 
@@ -196,6 +205,8 @@ def main():
                     speaking_echo_debug_lines = 0
                     speaking_post_mic_rms = []
                     speaking_post_ref_rms = []
+                    speaking_echo_gain_adapt_mic_rms = []
+                    speaking_echo_gain_adapt_ref_rms = []
                     tts_player.speak_async(llm_text)
                     # TTS başladıktan hemen sonra mikrofon buffer'ını flush edip
                     # önceki yankıların baseline/VAD'e sızmasını azaltıyoruz.
@@ -223,6 +234,8 @@ def main():
                 speaking_echo_debug_lines = 0
                 speaking_post_mic_rms = []
                 speaking_post_ref_rms = []
+                speaking_echo_gain_adapt_mic_rms = []
+                speaking_echo_gain_adapt_ref_rms = []
                 state = State.IDLE
                 before_chunks.clear()
                 log_state("not_hear")
@@ -380,6 +393,50 @@ def main():
                             energy_gate = True
                             corr_gate = True
 
+                        # Konuşma boyunca drift'i azaltmak için speaking_echo_gain'i sürekli takip et.
+                        # Burada "best_err < ECHO_PRED_ERROR_THRESHOLD" koşulu zaten yankıya yakın chunk'lardır.
+                        if (
+                            speaking_baseline_ready
+                            and best_ref_rms > 1e-6
+                            and energy_gate
+                            and corr_gate
+                            and best_err < ECHO_PRED_ERROR_THRESHOLD
+                        ):
+                            speaking_echo_gain_adapt_mic_rms.append(mic_rms_now)
+                            speaking_echo_gain_adapt_ref_rms.append(best_ref_rms)
+                            # Sınırla: gerçek-time maliyeti büyümesin.
+                            if (
+                                len(speaking_echo_gain_adapt_mic_rms)
+                                > ECHO_GAIN_ADAPT_MAX_POINTS
+                            ):
+                                speaking_echo_gain_adapt_mic_rms = (
+                                    speaking_echo_gain_adapt_mic_rms[
+                                        -ECHO_GAIN_ADAPT_MAX_POINTS:
+                                    ]
+                                )
+                                speaking_echo_gain_adapt_ref_rms = (
+                                    speaking_echo_gain_adapt_ref_rms[
+                                        -ECHO_GAIN_ADAPT_MAX_POINTS:
+                                    ]
+                                )
+
+                            if (
+                                len(speaking_echo_gain_adapt_ref_rms)
+                                >= ECHO_GAIN_ADAPT_MIN_POINTS
+                            ):
+                                a_arr = np.array(
+                                    speaking_echo_gain_adapt_mic_rms,
+                                    dtype=np.float32,
+                                )
+                                b_arr = np.array(
+                                    speaking_echo_gain_adapt_ref_rms,
+                                    dtype=np.float32,
+                                )
+                                denom = float(np.dot(b_arr, b_arr)) + 1e-6
+                                speaking_echo_gain = float(
+                                    np.dot(a_arr, b_arr) / denom
+                                )
+
                         # Debug: ilk birkaç "robot yankısı ihtimali yüksek" chunk için
                         # neden suppress edilmediğini gösteriyoruz.
                         if (
@@ -421,6 +478,8 @@ def main():
                         speaking_echo_rms_corr = 0.0
                         speaking_post_mic_rms = []
                         speaking_post_ref_rms = []
+                        speaking_echo_gain_adapt_mic_rms = []
+                        speaking_echo_gain_adapt_ref_rms = []
                         log_state("ready")
                 else:
                     # Grace döneminde interrupt detection kapalı; sadece baseline ölçüyoruz.
