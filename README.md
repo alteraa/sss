@@ -55,6 +55,36 @@ Python `3.12+` önerilir.
 `Silero VAD` için `torch` ve `torchaudio` uyumlu CPU wheel olarak kurulmalıdır.
 Gerekli paketler `requirements.txt` içindedir.
 
+## Minimum Gereksinimler
+
+Bu uygulamanın şu anki çalışan hali için gerçekten gerekli parçalar:
+
+### Python paketleri
+
+- `numpy`
+- `openai`
+- `python-dotenv`
+- `torch`
+- `torchaudio`
+- `sounddevice`
+- `aec-audio-processing`
+
+### Sistem / apt paketleri
+
+- `ffmpeg`
+- `python3.12`
+- `python3.12-venv`
+- `libportaudio2`
+- `portaudio19-dev`
+
+### Ortam değişkeni
+
+- `OPENAI_API_KEY`
+
+### Not
+
+Şu anki aktif workflow için `pyrnnoise` ve `soundfile` zorunlu değildir.
+
 ## Detaylı Dokümanlar
 
 - `docs/LOCAL_AUDIO_AEC_ARCHITECTURE.md`
