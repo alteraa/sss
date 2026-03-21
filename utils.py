@@ -4,11 +4,9 @@ from collections import deque
 from typing import Optional
 
 import numpy as np
-import pyaudio
 
 from sr import rms, vad_confidence
 
-FORMAT = pyaudio.paInt16
 CHANNELS = 1
 SAMPLE_RATE = 16000
 NUM_SAMPLES = 1536
@@ -102,10 +100,10 @@ class InterruptDetector:
         return False
 
 
-def to_wav(audio: list[bytes], path: str, pyaudio_: pyaudio.PyAudio):
+def to_wav(audio: list[bytes], path: str):
     with wave.open(path, "wb") as wf:
         wf.setnchannels(CHANNELS)
-        wf.setsampwidth(pyaudio_.get_sample_size(FORMAT))
+        wf.setsampwidth(2)
         wf.setframerate(SAMPLE_RATE)
         wf.writeframes(b"".join(audio))
 

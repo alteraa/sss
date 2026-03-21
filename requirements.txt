@@ -1,0 +1,21 @@
+# Python 3.12+ recommended.
+# `aec-audio-processing` requires Python >= 3.11.
+
+# Core project dependencies
+numpy
+openai
+python-dotenv
+
+# Current audio stack
+pyaudio
+
+# Target realtime audio stack
+sounddevice
+soundfile
+aec-audio-processing
+pyrnnoise
+webrtcvad-wheels
+numpy
+pyaudio
+openai
+python-dotenv
