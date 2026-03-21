@@ -19,6 +19,7 @@ from utils import (
     SPEAK_THRESHOLD,
     InterruptDetector,
     Streamer,
+    is_speech_start,
     to_wav,
 )
 
@@ -72,15 +73,20 @@ def main():
     silence_counter = 0
     speak_counter = 0
     speaking_baseline_ready = False
+    post_tts_ignore_chunks = 0
+    POST_TTS_IGNORE_CHUNKS = 8
 
     def reset_to_idle():
         nonlocal state, streamer, silence_counter, speak_counter, speaking_baseline_ready
+        nonlocal post_tts_ignore_chunks
         interrupt_detector.reset()
         before_chunks.clear()
+        audio_io.clear_input_queue()
         streamer = None
         silence_counter = 0
         speak_counter = 0
         speaking_baseline_ready = False
+        post_tts_ignore_chunks = POST_TTS_IGNORE_CHUNKS
         state = State.IDLE
 
     def exit_handler(signum, frame):
@@ -124,8 +130,11 @@ def main():
         if state == State.IDLE:
             before_chunks.append(raw)
             interrupt_detector.feed_rolling(raw)
-            conf = vad_confidence(raw)
-            if conf > SPEAK_THRESHOLD:
+            if post_tts_ignore_chunks > 0:
+                post_tts_ignore_chunks -= 1
+                continue
+            baseline = interrupt_detector.current_baseline()
+            if is_speech_start(raw, baseline):
                 speak_counter += 1
                 if speak_counter >= DEBOUNCE_CHUNKS:
                     state = State.LISTENING

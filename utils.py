@@ -12,6 +12,9 @@ SAMPLE_RATE = 16000
 NUM_SAMPLES = 1536
 
 SPEAK_THRESHOLD = 0.5
+START_RMS_MULTIPLIER = 2.2
+MIN_START_RMS = 180.0
+MAX_START_CREST_FACTOR = 6.5
 
 # Echo (hoparlörden mikrofona yansıma) daha yüksek olduğu senaryolarda
 # robota kendi sesinden dolayı yanlış interrupt atılmasını azaltır.
@@ -68,6 +71,11 @@ class InterruptDetector:
     def feed_rolling(self, audio_chunk: bytes):
         self._rolling.append(rms(audio_chunk))
 
+    def current_baseline(self) -> float:
+        if len(self._rolling) >= 5:
+            return float(np.mean(self._rolling))
+        return 80.0
+
     def update(self, audio_chunk: bytes) -> bool:
         current_rms = rms(audio_chunk)
         current_vad = vad_confidence(audio_chunk)
@@ -98,6 +106,35 @@ class InterruptDetector:
             self.reset()
             return True
         return False
+
+
+def crest_factor(audio_chunk: bytes) -> float:
+    arr = np.frombuffer(audio_chunk, np.int16).astype("float32")
+    if len(arr) == 0:
+        return 0.0
+    chunk_rms = float(np.sqrt(np.mean(arr**2)))
+    if chunk_rms < 1e-6:
+        return 0.0
+    peak = float(np.max(np.abs(arr)))
+    return peak / chunk_rms
+
+
+def is_speech_start(audio_chunk: bytes, baseline: float) -> bool:
+    current_vad = vad_confidence(audio_chunk)
+    if current_vad <= SPEAK_THRESHOLD:
+        return False
+
+    current_rms = rms(audio_chunk)
+    rms_threshold = max(MIN_START_RMS, baseline * START_RMS_MULTIPLIER)
+    if current_rms <= rms_threshold:
+        return False
+
+    # Parmak şıklatma, alkış, kısa darbe gibi transient sesler genelde
+    # konuşmaya göre daha yüksek crest factor üretir.
+    if crest_factor(audio_chunk) > MAX_START_CREST_FACTOR:
+        return False
+
+    return True
 
 
 def to_wav(audio: list[bytes], path: str):

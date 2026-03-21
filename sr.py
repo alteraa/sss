@@ -18,7 +18,7 @@ except Exception as e:
     silero_vad_model = None
     print(f"WARNING silero_vad unavailable, fallback to webrtcvad: {e}", file=sys.stderr)
 
-webrtc_vad = webrtcvad.Vad(2)
+webrtc_vad = webrtcvad.Vad(3)
 
 SAMPLE_RATE = 16000
 NUM_SAMPLES = 1536

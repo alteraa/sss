@@ -121,11 +121,19 @@ class AudioIO:
     def read_chunk(self, timeout: Optional[float] = None) -> bytes:
         return self._input_queue.get(timeout=timeout)
 
+    def clear_input_queue(self):
+        while True:
+            try:
+                self._input_queue.get_nowait()
+            except queue.Empty:
+                break
+
     def start_playback(self, samples: np.ndarray):
         with self._playback_lock:
             self._playback_samples = np.ascontiguousarray(samples.astype(np.int16))
             self._playback_cursor = 0
             self._playback_active = len(self._playback_samples) > 0
+        self.clear_input_queue()
         self._reset_processor()
 
     def stop_playback(self):
@@ -133,6 +141,7 @@ class AudioIO:
             self._playback_active = False
             self._playback_samples = None
             self._playback_cursor = 0
+        self.clear_input_queue()
         self._reset_processor()
 
     @property
