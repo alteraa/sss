@@ -12,6 +12,7 @@ from utils import CHANNELS, NUM_SAMPLES, SAMPLE_RATE
 AUDIO_PROCESSOR_DELAY_MS = 60
 AUDIO_PROCESSOR_FRAME_SIZE = 160  # 10 ms @ 16 kHz
 INPUT_QUEUE_MAX_CHUNKS = 64
+MAX_STATUS_LOGS = 10
 
 
 class AudioIO:
@@ -21,13 +22,14 @@ class AudioIO:
         self._playback_samples: Optional[np.ndarray] = None
         self._playback_cursor = 0
         self._playback_active = False
+        self._status_log_count = 0
         self._stream = sd.Stream(
             samplerate=SAMPLE_RATE,
             blocksize=NUM_SAMPLES,
             dtype="int16",
             channels=CHANNELS,
             callback=self._callback,
-            latency="low",
+            latency="high",
         )
         self._processor = self._create_processor()
         self._stream.start()
@@ -103,11 +105,16 @@ class AudioIO:
         return np.concatenate(out_parts)
 
     def _callback(self, indata, outdata, frames, time_info, status):
-        if status:
-            print(f"ERROR audio callback status: {status}", file=sys.stderr, flush=True)
-
         playback = self._consume_playback(frames)
         outdata[:, 0] = playback
+
+        if status:
+            is_startup_output_underflow = bool(
+                getattr(status, "output_underflow", False) and not self.is_playing
+            )
+            if not is_startup_output_underflow and self._status_log_count < MAX_STATUS_LOGS:
+                self._status_log_count += 1
+                print(f"ERROR audio callback status: {status}", file=sys.stderr, flush=True)
 
         mic = np.ascontiguousarray(indata[:, 0].copy(), dtype=np.int16)
         try:
