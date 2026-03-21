@@ -114,7 +114,7 @@ class AudioIO:
             cleaned = self._process_chunk(mic, playback)
         except Exception as e:
             print(f"ERROR audio processing: {e}", file=sys.stderr, flush=True)
-            cleaned = mic
+            cleaned = np.zeros_like(mic)
 
         self._queue_input_chunk(cleaned.astype(np.int16).tobytes())
 

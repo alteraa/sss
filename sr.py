@@ -2,23 +2,16 @@ import numpy as np
 import torch
 import sys
 import math
-import webrtcvad
 
 torch.set_num_threads(2)
 
-try:
-    silero_vad_model, _ = torch.hub.load(
-        # Lokal klasörden okumak yerine Torch Hub üzerinden indir.
-        # İlgili repo: snakers4/silero-vad (önceden snakers4_silero-vad_master olarak kullanılıyordu)
-        repo_or_dir="snakers4/silero-vad",
-        source="github",
-        model="silero_vad",
-    )
-except Exception as e:
-    silero_vad_model = None
-    print(f"WARNING silero_vad unavailable, fallback to webrtcvad: {e}", file=sys.stderr)
-
-webrtc_vad = webrtcvad.Vad(3)
+silero_vad_model, _ = torch.hub.load(
+    # Lokal klasörden okumak yerine Torch Hub üzerinden indir.
+    # İlgili repo: snakers4/silero-vad (önceden snakers4_silero-vad_master olarak kullanılıyordu)
+    repo_or_dir="snakers4/silero-vad",
+    source="github",
+    model="silero_vad",
+)
 
 SAMPLE_RATE = 16000
 NUM_SAMPLES = 1536
@@ -39,9 +32,6 @@ def rms(audio_chunk: bytes) -> float:
 
 
 def vad_confidence(audio_chunk: bytes) -> float:
-    if silero_vad_model is None:
-        return vad_confidence_webrtc(audio_chunk)
-
     audio_float = int2float(audio_chunk)
     x = torch.from_numpy(audio_float).float()
     if x.dim() == 1:
@@ -78,29 +68,6 @@ def vad_confidence(audio_chunk: bytes) -> float:
 
     scores = np.array(confidences, dtype=np.float32)
     return float(max(np.mean(scores), np.percentile(scores, 75)))
-
-
-def vad_confidence_webrtc(audio_chunk: bytes) -> float:
-    frame_bytes = int(SAMPLE_RATE * 0.03) * 2  # 30 ms, 16-bit mono
-    if frame_bytes <= 0:
-        return 0.0
-
-    voiced = 0
-    total = 0
-    for start in range(0, len(audio_chunk), frame_bytes):
-        frame = audio_chunk[start : start + frame_bytes]
-        if len(frame) < frame_bytes:
-            frame = frame + (b"\x00" * (frame_bytes - len(frame)))
-        total += 1
-        try:
-            if webrtc_vad.is_speech(frame, SAMPLE_RATE):
-                voiced += 1
-        except Exception:
-            pass
-
-    if total == 0:
-        return 0.0
-    return voiced / total
 
 
 def transcribe(audio_path: str) -> str:
