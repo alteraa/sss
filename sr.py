@@ -2,6 +2,7 @@ import numpy as np
 import torch
 import sys
 import math
+from openai_client import openai_client
 
 torch.set_num_threads(2)
 
@@ -74,14 +75,11 @@ def transcribe(audio_path: str) -> str:
     # OpenAI Whisper API ile transkripsiyon yap.
     # Not: Bu fonksiyon main.py içinde worker thread tarafından çağrılıyor.
     try:
-        import llm  # lazy import (sr.py tek başına import edilse bile patlamasın)
-
-        client = getattr(llm, "openai_client", None)
-        if not client:
+        if not openai_client:
             return ""
 
         with open(audio_path, "rb") as f:
-            resp = client.audio.transcriptions.create(
+            resp = openai_client.audio.transcriptions.create(
                 model="whisper-1",
                 file=f,
                 language="tr",

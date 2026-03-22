@@ -8,6 +8,7 @@ from typing import Callable, Optional
 import numpy as np
 
 from audio_io import AudioIO
+from openai_client import openai_client
 
 OPENAI_TTS_VOICE = "nova"
 
@@ -26,13 +27,10 @@ class TTSPlayer:
         return self.audio_io.is_playing
 
     def speak(self, text: str):
-        import llm
-
         with self.tts_lock:
             if self.audio_io.is_playing:
                 return
 
-        openai_client = llm.openai_client
         if not openai_client:
             print("ERROR: openai_client is None, cannot speak", file=sys.stderr)
             self.is_robot_speaking = False
