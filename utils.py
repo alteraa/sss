@@ -1,10 +1,10 @@
-import sys
 import wave
 from collections import deque
 from typing import Optional
 
 import numpy as np
 
+from log_utils import debug_status, finish_debug_status, log_plain
 from sr import rms, vad_confidence
 
 CHANNELS = 1
@@ -46,11 +46,7 @@ class InterruptDetector:
         else:
             self._frozen_baseline = None
         self._counter = 0
-        print(
-            f"DEBUG baseline frozen={self._frozen_baseline}",
-            file=sys.stderr,
-            flush=True,
-        )
+        debug_status(f"DEBUG baseline frozen={self._frozen_baseline}")
 
     def reset(self):
         self._counter = 0
@@ -88,12 +84,9 @@ class InterruptDetector:
         rms_ok = current_rms > threshold
         vad_ok = current_vad > INTERRUPT_VAD_THRESHOLD
 
-        print(
+        debug_status(
             f"DEBUG rms={current_rms:.1f} baseline={baseline:.1f} "
-            f"thr={threshold:.1f} vad={current_vad:.3f}",
-            file=sys.stderr,
-            flush=True,
-            # end="\r",
+            f"thr={threshold:.1f} vad={current_vad:.3f}"
         )
 
         if rms_ok and vad_ok:
@@ -102,7 +95,8 @@ class InterruptDetector:
             self._counter = 0
 
         if self._counter >= INTERRUPT_HOLD:
-            print("interrupt: human_speaking_while_robot", flush=True)
+            finish_debug_status()
+            log_plain("interrupt: human_speaking_while_robot")
             self.reset()
             return True
         return False

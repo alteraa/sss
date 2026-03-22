@@ -9,6 +9,7 @@ from enum import Enum, auto
 
 from audio_io import AudioIO
 from llm import stream_llm_sentences
+from log_utils import TurnLogger, log_plain
 from sr import vad_confidence, transcribe
 from tts import TTSPlayer
 from utils import (
@@ -42,10 +43,12 @@ def main():
     exited = False
 
     def log_state(label: str):
-        print(f"state: {label}", flush=True)
+        log_plain(f"state: {label}")
 
     work_queue: queue.Queue[tuple[int, list[bytes]]] = queue.Queue()
     result_queue: queue.Queue[tuple[str, int, str | None]] = queue.Queue()
+    turn_logger = TurnLogger()
+    pending_capture_started_at: float | None = None
 
     def worker_loop():
         while True:
@@ -57,14 +60,22 @@ def main():
                 path = "/tmp/tmp_sound_sr.wav"
                 to_wav(audio_buffer, path)
                 if not is_turn_active():
+                    turn_logger.stale_before_sr(turn_id)
                     continue
 
+                sr_started_at = time.time()
+                turn_logger.sr_started(turn_id, sr_started_at)
                 result = transcribe(path)
+                sr_done_at = time.time()
+
                 if not is_turn_active():
+                    turn_logger.stale_after_sr(turn_id, sr_started_at, sr_done_at)
                     continue
+
+                turn_logger.sr_done(turn_id, sr_started_at, sr_done_at)
 
                 if len(result) > 2:
-                    print(f"result: {result.strip()}", flush=True)
+                    log_plain(f"result: {result.strip()}")
                     full_response_parts: list[str] = []
                     emitted_segment = False
 
@@ -72,19 +83,26 @@ def main():
                         result.strip(), should_continue=is_turn_active
                     ):
                         if not is_turn_active():
+                            turn_logger.stale_during_llm(turn_id)
                             break
 
                         segment = sentence.strip()
                         if not segment:
                             continue
+
+                        if not emitted_segment:
+                            turn_logger.llm_first_segment(turn_id, sr_done_at, time.time())
+
                         full_response_parts.append(segment)
                         emitted_segment = True
-                        print(f"llm segment: {segment}", flush=True)
+                        turn_logger.llm_segment(turn_id)
+                        log_plain(f"llm segment: {segment}")
                         result_queue.put(("segment", turn_id, segment))
 
                     if is_turn_active():
                         full_response = " ".join(full_response_parts).strip()
-                        print(f"llm: {full_response}", flush=True)
+                        log_plain(f"llm: {full_response}")
+                        turn_logger.llm_done(turn_id, sr_done_at, len(full_response_parts))
                         result_queue.put(
                             ("done", turn_id, full_response if emitted_segment else None)
                         )
@@ -92,7 +110,7 @@ def main():
                     if is_turn_active():
                         result_queue.put(("done", turn_id, None))
             except Exception as e:
-                print(f"ERROR worker: {e}", file=sys.stderr, flush=True)
+                log_plain(f"ERROR worker: {e}", stream=sys.stderr)
                 if active_turn_id == turn_id:
                     result_queue.put(("done", turn_id, None))
 
@@ -114,6 +132,7 @@ def main():
     def reset_to_idle():
         nonlocal state, streamer, silence_counter, speak_counter, speaking_baseline_ready
         nonlocal post_tts_ignore_chunks, active_turn_id, tts_stream_started, tts_stream_finished
+        nonlocal pending_capture_started_at
         interrupt_detector.reset()
         before_chunks.clear()
         audio_io.clear_input_queue()
@@ -125,6 +144,7 @@ def main():
         active_turn_id = None
         tts_stream_started = False
         tts_stream_finished = False
+        pending_capture_started_at = None
         state = State.IDLE
 
     def consume_result_queue():
@@ -141,6 +161,9 @@ def main():
                 continue
 
             if event_type == "segment" and payload:
+                now = time.time()
+                segment_index = turn_logger.tts_segment_received(turn_id)
+
                 if not tts_stream_started:
                     interrupt_detector.reset()
                     speaking_baseline_ready = False
@@ -148,6 +171,9 @@ def main():
                     tts_stream_started = True
                     state = State.SPEAKING
                     log_state("speaking")
+                    turn_logger.tts_first_segment_queued(turn_id, now)
+                else:
+                    turn_logger.tts_extra_segment_queued(turn_id, segment_index)
 
                 tts_player.enqueue_segment(payload)
                 continue
@@ -156,7 +182,9 @@ def main():
                 if tts_stream_started and not tts_stream_finished:
                     tts_player.finish_stream()
                     tts_stream_finished = True
+                    turn_logger.tts_stream_closed(turn_id)
                 elif not tts_stream_started:
+                    turn_logger.turn_finished_without_speech(turn_id)
                     reset_to_idle()
                     log_state("not_hear")
 
@@ -198,8 +226,10 @@ def main():
             if is_speech_start(raw, baseline):
                 speak_counter += 1
                 if speak_counter >= DEBOUNCE_CHUNKS:
+                    pending_capture_started_at = time.time()
                     state = State.LISTENING
                     log_state("hear")
+                    turn_logger.speech_detected()
                     streamer = Streamer()
                     for c in before_chunks:
                         streamer.add(c)
@@ -221,15 +251,25 @@ def main():
                 log_state("process")
                 next_turn_id += 1
                 active_turn_id = next_turn_id
+                process_started_at = time.time()
                 tts_stream_started = False
                 tts_stream_finished = False
+                turn_logger.begin_turn(
+                    active_turn_id,
+                    pending_capture_started_at,
+                    process_started_at,
+                    len(streamer.audio_buffer),
+                )
                 work_queue.put((active_turn_id, streamer.audio_buffer))
                 state = State.PROCESSING
                 streamer = None
                 silence_counter = 0
 
         elif state == State.SPEAKING:
+            turn_logger.maybe_log_playback_started(active_turn_id, tts_player.get_start_time())
+
             if not tts_player.is_robot_speaking:
+                turn_logger.response_finished(active_turn_id)
                 reset_to_idle()
                 log_state("not_hear")
                 continue
@@ -240,6 +280,7 @@ def main():
                     interrupt_detector.freeze_baseline()
                     speaking_baseline_ready = True
                 if interrupt_detector.update(raw):
+                    turn_logger.interrupt(active_turn_id, elapsed)
                     tts_player.stop()
                     before_chunks.clear()
                     streamer = Streamer()
@@ -247,6 +288,7 @@ def main():
                     silence_counter = 0
                     speak_counter = 0
                     speaking_baseline_ready = False
+                    pending_capture_started_at = time.time()
                     active_turn_id = None
                     tts_stream_started = False
                     tts_stream_finished = False
