@@ -1,6 +1,7 @@
 import queue
 import sys
 import threading
+from collections import deque
 from typing import Optional
 
 import numpy as np
@@ -19,7 +20,7 @@ class AudioIO:
     def __init__(self):
         self._input_queue: queue.Queue[bytes] = queue.Queue(maxsize=INPUT_QUEUE_MAX_CHUNKS)
         self._playback_lock = threading.Lock()
-        self._playback_samples: Optional[np.ndarray] = None
+        self._playback_segments: deque[np.ndarray] = deque()
         self._playback_cursor = 0
         self._playback_active = False
         self._status_log_count = 0
@@ -59,24 +60,31 @@ class AudioIO:
 
     def _consume_playback(self, frames: int) -> np.ndarray:
         with self._playback_lock:
-            if not self._playback_active or self._playback_samples is None:
+            if not self._playback_active or not self._playback_segments:
                 return np.zeros(frames, dtype=np.int16)
 
-            end = min(self._playback_cursor + frames, len(self._playback_samples))
-            chunk = self._playback_samples[self._playback_cursor:end]
-            self._playback_cursor = end
+            out = np.zeros(frames, dtype=np.int16)
+            written = 0
 
-            if len(chunk) < frames:
-                padded = np.zeros(frames, dtype=np.int16)
-                padded[: len(chunk)] = chunk
-                chunk = padded
+            while written < frames and self._playback_segments:
+                current = self._playback_segments[0]
+                available = len(current) - self._playback_cursor
+                take = min(frames - written, available)
 
-            if self._playback_cursor >= len(self._playback_samples):
+                out[written : written + take] = current[
+                    self._playback_cursor : self._playback_cursor + take
+                ]
+                written += take
+                self._playback_cursor += take
+
+                if self._playback_cursor >= len(current):
+                    self._playback_segments.popleft()
+                    self._playback_cursor = 0
+
+            if not self._playback_segments:
                 self._playback_active = False
-                self._playback_samples = None
-                self._playback_cursor = 0
 
-            return chunk
+            return out
 
     def _process_chunk(self, mic_chunk: np.ndarray, ref_chunk: np.ndarray) -> np.ndarray:
         out_parts: list[np.ndarray] = []
@@ -136,17 +144,40 @@ class AudioIO:
                 break
 
     def start_playback(self, samples: np.ndarray):
+        normalized = np.ascontiguousarray(samples.astype(np.int16))
         with self._playback_lock:
-            self._playback_samples = np.ascontiguousarray(samples.astype(np.int16))
+            self._playback_segments.clear()
+            if len(normalized) > 0:
+                self._playback_segments.append(normalized)
             self._playback_cursor = 0
-            self._playback_active = len(self._playback_samples) > 0
+            self._playback_active = len(normalized) > 0
         self.clear_input_queue()
         self._reset_processor()
+
+    def enqueue_playback(self, samples: np.ndarray):
+        normalized = np.ascontiguousarray(samples.astype(np.int16))
+        if len(normalized) == 0:
+            return
+
+        should_reset = False
+        with self._playback_lock:
+            was_idle = not self._playback_active or not self._playback_segments
+            if was_idle:
+                self._playback_segments.clear()
+                self._playback_cursor = 0
+                should_reset = True
+
+            self._playback_segments.append(normalized)
+            self._playback_active = True
+
+        if should_reset:
+            self.clear_input_queue()
+            self._reset_processor()
 
     def stop_playback(self):
         with self._playback_lock:
             self._playback_active = False
-            self._playback_samples = None
+            self._playback_segments.clear()
             self._playback_cursor = 0
         self.clear_input_queue()
         self._reset_processor()
