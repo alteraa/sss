@@ -34,9 +34,10 @@ Controller içinde kalması gereken parçalar:
 
 - `audio_io.py` içindeki `sounddevice` stream ve `AEC/NS`
 - `main.py` içindeki state machine
-- playback buffer yönetimi
+- playback buffer ve segment queue yönetimi
 - interrupt detection
-- `turn_id`, cancel ve stale-result discard mantığı
+- `turn_id`, `segment_id`, cancel ve stale-result discard mantığı
+- `stream` ve `non-stream` modları arasında seçim yapan response orchestration
 
 Özellikle `TTS` servisi sesi çalmamalıdır.
 
@@ -49,22 +50,24 @@ Doğru sınır:
 
 | Katman | Sorumluluk | Servis tipi | Önerilen haberleşme | Veri tipi | Not |
 |---|---|---|---|---|---|
-| `Controller / Audio Frontend` | `sounddevice`, `AEC`, state machine, interrupt, playback | Ana process | In-process | `numpy.int16`, queue | En düşük latency burada gerekir |
+| `Controller / Audio Frontend` | `sounddevice`, `AEC`, mode-aware orchestration, interrupt, playback queue | Ana process | In-process | `numpy.int16`, queue | En düşük latency burada gerekir |
 | `SR Service` | Segment bazlı transcription | Local microservice | `HTTP REST` | WAV veya `pcm_s16le` | Request-response için yeterli |
-| `LLM Service` | Metin üretimi, konuşma geçmişi | Local microservice | `HTTP REST` | JSON | Text tabanlı olduğu için REST en sade çözüm |
-| `TTS Service` | Metinden ses üretimi | Local microservice | `HTTP REST` | İstek JSON, yanıt `application/octet-stream` PCM | JSON/base64 yerine binary yanıt tercih edilmeli |
-| `Turn / Cancel Control` | `turn_id`, `session_id`, timeout, discard | Controller içi orkestrasyon | In-process + hafif RPC | Küçük metadata mesajları | Yarış durumlarını azaltır |
+| `LLM Service` | Metin üretimi, konuşma geçmişi, token/text stream | Local microservice | `HTTP REST` + `SSE` | JSON, text stream events | `non-stream` ve `stream` modlarını birlikte destekler |
+| `TTS Service` | Metinden ses üretimi | Local microservice | `HTTP REST` | İstek JSON, yanıt `application/octet-stream` PCM | Hem tam yanıt hem cümle/segment sentezi desteklenmeli |
+| `Turn / Cancel Control` | `turn_id`, `segment_id`, `session_id`, timeout, discard | Controller içi orkestrasyon | In-process + hafif RPC | Küçük metadata mesajları | Yarış durumlarını azaltır |
 
 ## Neden REST?
 
-Bu proje için ilk aşamada en dengeli seçim `localhost` üstünde `HTTP REST` olur.
+Bu proje için en dengeli seçim `localhost` üstünde `HTTP REST` tabanlı bir yapı ve
+gereken yerde `SSE` ile streaming desteğidir.
 
 Avantajları:
 
 - basit uygulanır
 - servisler bağımsız test edilebilir
 - loglama ve hata ayıklama kolaydır
-- `SR`, `LLM`, `TTS` tarafında request-response modeline iyi uyar
+- `SR` ve `TTS` tarafında request-response modeline iyi uyar
+- `LLM` tarafında `SSE` ile token veya text chunk akışı taşınabilir
 
 Sınırları:
 
@@ -74,7 +77,9 @@ Sınırları:
 
 Bu nedenle öneri şudur:
 
-- `SR`, `LLM`, `TTS` servis çağrıları REST ile yapılsın
+- `SR` servis çağrıları REST ile yapılsın
+- `LLM` için hem `non-stream` REST response hem `stream` için `SSE` desteklensin
+- `TTS` için hem tam yanıt hem segment bazlı sentez REST ile sunulsun
 - gerçek zamanlı audio callback ve playback controller içinde kalsın
 
 ## Önerilen Akış
@@ -82,13 +87,16 @@ Bu nedenle öneri şudur:
 1. Controller mikrofondan temizlenmiş chunk'ları alır.
 2. `IDLE -> LISTENING` geçişi controller içinde verilir.
 3. Konuşma bitince controller segmenti `SR` servisine yollar.
-4. Transcript controller'a dönünce `LLM` servisine iletilir.
-5. LLM yanıtı controller'a dönünce `TTS` servisine gönderilir.
-6. `TTS` servisi `PCM int16` ses döndürür.
-7. Controller dönen örnekleri playback buffer'a yazar.
-8. Aynı playback verisi hoparlöre giderken `AEC` için reverse reference olarak kullanılır.
-9. Kullanıcı robot konuşurken tekrar konuşursa interrupt kararı controller'da verilir.
-10. Interrupt olursa playback durur ve eski turn sonuçları çöpe atılır.
+4. Controller response moduna göre iki farklı yol izler:
+   - `non-stream`: transcript `LLM` servisine gider, tam yanıt beklenir, sonra `TTS` tam metni sentezler
+   - `stream`: `LLM` token veya text chunk stream'i başlatır, controller gelen parçaları buffer'layıp cümle sınırlarını belirler
+5. `stream` modda tamamlanan her cümle veya güvenli segment ayrı bir `TTS` isteğine çevrilir.
+6. `TTS` servisi her çağrı için `PCM int16` ses döndürür.
+7. Controller dönen örnekleri playback segment queue'suna yazar.
+8. İlk segment gelir gelmez robot konuşmaya başlar; geri kalan segmentler sırayla queue'ya eklenir.
+9. Aynı playback verisi hoparlöre giderken `AEC` için reverse reference olarak kullanılır.
+10. Kullanıcı robot konuşurken tekrar konuşursa interrupt kararı controller'da verilir.
+11. Interrupt olursa playback queue temizlenir ve eski turn veya segment sonuçları çöpe atılır.
 
 ## Mermaid Diyagram
 
@@ -101,11 +109,12 @@ flowchart LR
 
     subgraph Controller[Controller Layer]
         AIO[AudioIO\nsounddevice + AEC]
-        FSM[State Machine\nIDLE / LISTENING / PROCESSING / SPEAKING]
+        FSM[State Machine\nIDLE / LISTENING / RESPONDING]
         DET[Speech Start + Interrupt Detector]
         BUF[Speech Buffer]
-        PB[Playback Buffer]
-        TURN[Turn Manager\nturn_id / cancel / stale discard]
+        SBUF[Sentence Buffer\nstream mode]
+        PB[Playback Segment Queue]
+        TURN[Turn Manager\nturn_id / segment_id / cancel / mode]
     end
 
     subgraph SR[SR Service Layer]
@@ -114,12 +123,12 @@ flowchart LR
     end
 
     subgraph LLM[LLM Service Layer]
-        LLMAPI[REST API]
+        LLMAPI[REST API + SSE]
         LLMCORE[LLM Engine\nsession memory]
     end
 
     subgraph TTS[TTS Service Layer]
-        TTSAPI[REST API]
+        TTSAPI[REST API\nfull-text + segment]
         TTSCORE[TTS Engine]
     end
 
@@ -133,11 +142,13 @@ flowchart LR
     SRAPI --> SRCORE
     SRCORE -->|transcript JSON| TURN
 
-    TURN -->|HTTP REST\nJSON| LLMAPI
+    TURN -->|HTTP REST or SSE\nJSON / text stream| LLMAPI
     LLMAPI --> LLMCORE
-    LLMCORE -->|reply JSON| TURN
+    LLMCORE -->|reply JSON or text stream| TURN
 
-    TURN -->|HTTP REST\nJSON| TTSAPI
+    TURN --> SBUF
+    SBUF -->|sentence / segment text| TTSAPI
+    TURN -->|non-stream full text| TTSAPI
     TTSAPI --> TTSCORE
     TTSCORE -->|PCM16 bytes| TURN
 
@@ -176,7 +187,7 @@ flowchart LR
 `POST /llm/generate`
 
 - request: `turn_id`, `session_id`, `text`
-- response: yanıt metni
+- response: tam yanıt metni (`non-stream` mod)
 
 Örnek response:
 
@@ -187,6 +198,17 @@ flowchart LR
 }
 ```
 
+Streaming modu için:
+
+`POST /llm/generate/stream`
+
+- request: `turn_id`, `session_id`, `text`
+- response: `SSE` veya chunked text stream
+- event tipleri:
+  - `delta`
+  - `sentence`
+  - `done`
+
 ### `TTS`
 
 `POST /tts/synthesize`
@@ -194,9 +216,17 @@ flowchart LR
 - request: `turn_id`, `text`, `voice`, `sample_rate`
 - response: `application/octet-stream` olarak `pcm_s16le`
 
+Segment bazlı mod için:
+
+`POST /tts/synthesize-segment`
+
+- request: `turn_id`, `segment_id`, `text`, `voice`, `sample_rate`
+- response: `application/octet-stream` olarak `pcm_s16le`
+
 Not:
 
 - `TTS` için JSON + base64 yerine binary response tercih edilmelidir
+- `stream` modda controller gelen LLM parçalarını uygun cümle veya segmentlere bölüp bu endpoint'e gönderir
 
 ## Korunması Gereken Davranışlar
 
@@ -207,12 +237,14 @@ Servisleşme sonrası da aşağıdakiler değişmemelidir:
 - playback başlarken input queue temizlenmesi
 - playback biterken residual etkileri azaltan kısa ignore penceresi
 - robot konuşurken gelen yeni insan konuşmasının aktif turn'ü kesebilmesi
+- hem `stream` hem `non-stream` modlarının aynı controller sınırı içinde desteklenmesi
 
 ## Operasyonel Kurallar
 
 Her servis çağrısında:
 
 - `turn_id` kullanılmalı
+- `stream` modda `segment_id` kullanılmalı
 - eski `turn_id` ile gelen cevaplar discard edilmeli
 - `LLM` için `session_id` kullanılmalı
 - timeout uygulanmalı
