@@ -112,6 +112,10 @@ Eklenebilecek özellikler:
 - `docs/GUIDE.md`
   Mevcut AEC-first mimari sonrası araştırma ve ölçümleme rehberi.
 
+- `docs/LOCAL_SERVICE_SPLIT_ARCHITECTURE.md`
+  `SR`, `LLM` ve `TTS` servislerine ayrılmış yerel mimari taslağı, controller sınırı
+  ve haberleşme tercihleri.
+
 - `docs/echo_gain_adaptation_main_vs_high-mic-level.md`
   Eski heuristic echo gain yaklaşımına dair tarihsel notlar.
 
