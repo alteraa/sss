@@ -142,15 +142,17 @@ uv pip install --python .venv/bin/python --index-url https://download.pytorch.or
 - `torch`
 - `torchaudio`
 - `sounddevice`
-- `soundfile`
 - `aec-audio-processing`
-- `pyrnnoise`
 - `numpy`
 - `openai`
 - `python-dotenv`
 
-Not: `pyrnnoise` kurulu olsa da şu an ana workflow içinde aktif olarak kullanılmıyor.
-İleride ek gürültü bastırma katmanı gerekirse devreye alınabilir.
+Varsayılan kurulum artık yalnızca aktif workflow'ta kullanılan paketleri içerir.
+
+Eklenebilecek özellik notları:
+
+- `pyrnnoise`: AEC sonrasına opsiyonel ikinci aşama noise suppression katmanı olarak yeniden eklenebilir
+- `soundfile`: ileride dosya tabanlı ses debug/export veya offline analiz araçları gerekirse eklenebilir
 
 ## `output underflow` Notu
 

@@ -1,44 +1,38 @@
-# Echo Gain Adaptasyonu: `main` vs `high-mic-level`
+# Echo Gain Adaptasyonu Notu
 
-Bu doküman, `main` ile `high-mic-level` dalları arasındaki `main.py` farklarını özetler. Farkın ana odağı, konuşma sırasında `speaking_echo_gain` değerinin **adaptif olarak yeniden tahmin edilmesi** (drift azaltma) davranışıdır.
+Bu doküman artık yalnızca tarihsel bağlam içindir. Projenin güncel ses mimarisi
+`docs/LOCAL_AUDIO_AEC_ARCHITECTURE.md` içinde tanımlanan yerel AEC-first yapıdır.
 
-## Kapsam
+## Bu not neden artık ana referans değil?
 
-- Değişen dosya: `main.py`
-- `main` dalı: Konuşma boyunca echo gain drift’ini azaltmak için adaptif güncelleme içerir.
-- `high-mic-level` dalı: Bu adaptif güncelleme mantığını içermez (ilgili değişkenler ve hesap bloğu kaldırılmıştır).
+Önceki yaklaşımda yanlış interrupt sorununu azaltmak için `main.py` içinde
+`speaking_echo_gain` benzeri heuristics tabanlı echo telafileri deneniyordu. Bu yöntem:
 
-## `main.py`’de yapılan değişiklikler
+- hoparlörden gerçekten çıkan örneklerle mikrofon yakalamasını aynı akışta tutmuyordu
+- echo baskılamayı asıl ses ön-uç yerine uygulama mantığında çözmeye çalışıyordu
+- yüksek hoparlör ve yüksek mikrofon gain senaryolarında kırılgan kalabiliyordu
 
-`main` dalında konuşma (SPEAKING) sırasında `speaking_echo_gain` güncellemesini destekleyen şu öğeler bulunuyordu; `high-mic-level` dalında bunlar kaldırılmıştır:
+Güncel mimaride bu sınıf yaklaşım ana çözüm olmaktan çıkarıldı. Bunun yerine:
 
-1. Adaptasyon için RMS örnek listeleri
-- `speaking_echo_gain_adapt_mic_rms`
-- `speaking_echo_gain_adapt_ref_rms`
+- mikrofon ve hoparlör aynı `sounddevice.Stream` içinde açılır
+- TTS referansı doğrudan playback buffer'ından AEC reverse stream'e verilir
+- interrupt kararı ham mikrofonda değil, AEC sonrası temizlenmiş sinyalde alınır
 
-2. Adaptasyon penceresi sabitleri (örnek sayısı limitleri)
-- `ECHO_GAIN_ADAPT_MIN_POINTS`
-- `ECHO_GAIN_ADAPT_MAX_POINTS`
+## Eski dal farkının anlamı
 
-3. Adaptif yeniden-tahmin (hesap) bloğu
-- Sadece belirli koşullar sağlandığında,
-  - `speaking_baseline_ready` = True
-  - `best_ref_rms > 1e-6`
-  - `energy_gate` ve `corr_gate` True
-  - `best_err < ECHO_PRED_ERROR_THRESHOLD`
-  koşullarının yanında `mic_rms_now` ile `best_ref_rms` değerleri biriktiriliyor;
-  - Biriken pencerede nokta sayısı min/max aralığında olduğunda `speaking_echo_gain` yeniden hesaplanıyordu.
+`main` ile `high-mic-level` arasındaki `speaking_echo_gain` adaptasyonu farkı, eski
+heuristic tabanlı echo telafisinin bir varyasyonuydu. Bugün bu fark:
 
-4. TTS geçişlerinde liste resetleri
-- TTS başlarken / state değişimlerinde adaptasyon listelerinin temizlenmesine yönelik ek resetler vardı; `high-mic-level` dalında bu resetler de kaldırılmıştır.
+- mevcut mimarinin ana davranışını açıklamaz
+- yeni tuning çalışmaları için birincil referans olarak kullanılmamalıdır
 
-## Davranışsal etki
+## Bu dosya ne zaman faydalı olabilir?
 
-- `main`: Konuşma boyunca “yankı benzeri” chunk’lar üzerinden `speaking_echo_gain` sürekli izlenip yeniden tahmin edildiği için, yüksek mic gain senaryolarında oluşabilen drift daha iyi telafi edilebilir.
-- `high-mic-level`: Bu sürekli adaptasyon olmadığı için `speaking_echo_gain` daha statik kalır; bu da drift telafisini azaltabilir ama hesap/samplinga bağlı maliyet ve değişkenlik ihtimalini düşürür.
+- Eski branch'lerdeki davranışı anlamak istenirse
+- Heuristic tabanlı echo compensation denemelerinin neden terk edildiğini belgelemek için
 
-## Test önerisi (kısa)
+## Güncel referanslar
 
-- Robot konuşurken yanlış interrupt oranı (özellikle yüksek hoparlör seviyesi / yüksek mic gain durumlarında) karşılaştırılabilir.
-- Loglarda `speaking_echo_gain` değişimi ve interrupt tetiklenme anındaki RMS/VAD/gate durumları izlenerek farkın yönü doğrulanabilir.
+- Ana mimari: `docs/LOCAL_AUDIO_AEC_ARCHITECTURE.md`
+- Gelecek tuning işleri: `docs/FUTURE_DIRECTIONS.md`
 

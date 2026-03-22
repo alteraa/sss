@@ -1,62 +1,81 @@
-## 1. Temel soru: "Sistem kendini nasıl duymuyor?"
+# ChatGPT Tarzı Sesli Uygulama Notları
 
-Bu sorunun cevabı **Acoustic Echo Cancellation (AEC)**'dir. Sistem TTS sesini hoparlörden çalarken aynı anda mikrofon da bu sesi yakalar. AEC, hoparlörden çıkan sinyali "referans" olarak alıp mikrofon sinyalinden matematiksel olarak çıkarır; böylece mikrofona giren ses sadece kullanıcının gerçek sesi kalır.
+Bu dosya genel ürün/mimari referansı içindir; `speech-to-speech` projesinin güncel
+uygulama mimarisini tarif etmez. Bu repo için geçerli gerçek kaynak
+`docs/LOCAL_AUDIO_AEC_ARCHITECTURE.md` dosyasıdır.
 
----
+## Bu projede şu an ne kullanılıyor?
 
-## 2. Katmanlar
+Mevcut proje:
 
-### Katman 1 — Donanım & OS
+- klasik `ASR -> LLM -> TTS` zinciri kullanır
+- yerel mikrofon/hoparlör akışını `sounddevice` ile yönetir
+- TTS referansını aynı process içinde AEC'e besler
+- konuşma algısı için `Silero VAD` kullanır
+- interrupt kararını temizlenmiş mikrofon sinyali üstünden verir
 
-iOS ve Android, mikrofon ile hoparlörü **ayrı donanım akışları** olarak yönetir. `AUGraph` (iOS) veya `AudioRecord/AudioTrack` (Android), 24 kHz PCM, mono, 20 ms'lik frame'ler üretir. İşletim sistemi, hoparlörden çıkan referans sinyali zaman damgasıyla birlikte AEC modülüne iletir — senkronizasyon bu noktada kurulur.
+Bu nedenle aşağıdaki notlar, "genel olarak ChatGPT benzeri sesli uygulamalarda hangi
+katmanlar olabilir?" sorusuna yöneliktir; repodaki aktif davranışın birebir özeti
+olarak okunmamalıdır.
 
-### Katman 2 — AEC3 (Acoustic Echo Cancellation)
+## 1. Temel prensip
 
-Hoparlörden çıkan ses analiz edilerek, mikrofon tarafından kaydedilen sesten çıkarılır; bu işlem yazılım tarafından gerçek zamanlı yapılır.
+Bir sesli sistemin kendi hoparlöründen çıkan sesi kullanıcı konuşması sanmaması için
+temel ihtiyaç `Acoustic Echo Cancellation (AEC)` veya eşdeğer bir echo bastırma
+katmanıdır. Kritik nokta, hoparlöre giden referans ses ile mikrofon yakalamasının
+senkron tutulması ve konuşma kararlarının mümkün olduğunca temizlenmiş sinyalde
+verilmesidir.
 
-Kullanılan teknoloji **WebRTC AEC3** (Chromium'un açık kaynak motoru) veya iOS/Android'in donanım AEC'sidir. AEC'nin temel prensibi, uzak referans sinyali ile tahmini eko arasındaki korelasyona dayanarak adaptif filtre parametrelerini güncellemek ve elde edilen tahmini eko değerini kayıt sinyalinden çıkarmaktır.
+## 2. Olası katmanlar
 
-Gelişmiş AEC sistemleri bile başlangıç çıkışı ses sızıntısına sebep olabilir; bu yüzden minimum VAD segment uzunluğu ve volume smoothing uygulanır.
+### Katman 1 - Ses I/O
 
-### Katman 3 — Voice Activity Detection (VAD): İki mod
+- Mikrofon ve hoparlör akışı
+- Frame boyutu, latency ve buffer yönetimi
+- Referans playback sinyalinin erişilebilir olması
 
-OpenAI Realtime API iki farklı VAD modu sunar:
+### Katman 2 - Echo bastırma
 
-**Server VAD (varsayılan):** Ses aktivasyonu için 0.0-1.0 arası eşik değeri kullanılır; varsayılan 0.5'tir. `prefix_padding_ms` varsayılan değeri 300 ms olup konuşmanın başını kesmemeyi sağlar, `silence_duration_ms` ise varsayılan 500 ms süren sessizliğin konuşmanın bittiğini işaretler.
+- Yerel AEC
+- İşletim sistemi veya donanım seviyesinde AEC
+- Gerekirse ek noise suppression
 
-**Semantic VAD (yeni nesil):** Semantic VAD, kullanıcının söylediği kelimelere göre konuşmasını tamamlayıp tamamlamadığını değerlendiren bir semantic classifier kullanır. "ummm…" gibi sürünen bir ses daha uzun beklemeye yol açarken kesin bir cümle anında tur bitirimini tetikler. Eagerness seviyeleri: `low` için 8 sn, `medium` için 4 sn, `high` için 2 sn maksimum timeout uygulanır.
+### Katman 3 - Speech activity detection
 
-### Katman 4 — Kesme (Barge-in) Mantığı
+- VAD tabanlı konuşma başlangıcı/bitişi
+- Enerji, RMS ve benzeri ek gate'ler
+- Grace period ve smoothing katmanları
 
-Realtime API, VAD aktifken TTS konuşurken kullanıcı sesi tespit edildiğinde devam eden yanıtı iptal edip yeni bir yanıt oluşturur. Sunucu, o ana kadar kaç byte'lık sesin çalındığını bildiğinden, konuşma geçmişini tam o noktada budanmış haliyle saklar.
+### Katman 4 - Barge-in / interrupt
 
-### Katman 5 — End-to-End Ses Modeli (GPT-4o Realtime)
+- Robot konuşurken kullanıcı konuşmasının güvenilir tespiti
+- TTS iptali, playback stop ve queue temizliği
+- Yanlış pozitif ile gecikmeli kesme arasındaki dengenin ayarlanması
 
-Geleneksel ses asistanları kaydı durdurur, metne çevirir, LLM'den geçirir, TTS ile tekrar sese dönüştürür. GPT-4o ise doğrudan ham sesi anlayıp ham ses üretir; bu aradaki üç modelin gecikmesini ortadan kaldırır.
+### Katman 5 - Diyalog pipeline'ı
 
-Realtime API, WebRTC veya SIP bağlantılarında akış sesi hem girdi hem çıktı olarak destekler; arka planda fonksiyon çağrısı yaparken konuşmayı sürdürebilir ve kesmeleri (opsiyonel VAD ile) yönetebilir.
+- `ASR -> LLM -> TTS` zinciri
+- veya uçtan uca ses modeli kullanan alternatif mimariler
 
-### Katman 6 — Pipeline İptali & Bağlam Senkronizasyonu
+## 3. Bu repo için kısa eşleme
 
-Kesme gerçekleştiğinde iptal edilebilir pipeline'lar gerekir: ASR, LLM ve TTS bileşenlerinin tamamı anında durdurulur; istemci tarafı API'lar aracılığıyla ses buffer'ı flush edilir. Konuşma geçmişine sadece kullanıcının gerçekten duyduğu kısım eklenir; model bir sonraki yanıtı oluştururken tutarsız bir bağlamla başlamaz.
-
----
-
-## 3. Kullanılan teknoloji yığını
-
-| Katman | Teknoloji |
+| İhtiyaç | Bu projedeki karşılığı |
 |---|---|
-| Ses işleme | WebRTC AEC3, iOS AUGraph, Android AudioRecord |
-| VAD | OpenAI Server VAD, Semantic VAD (GPT-4o tabanlı classifier) |
-| Taşıma | WebSocket veya WebRTC (gpt-realtime API) |
-| Gürültü azaltma | `near_field` / `far_field` noise reduction (Realtime API) |
-| Ses formatı | 24 kHz PCM mono, 20 ms frame'ler |
-| Açık kaynak alternatif | Pipecat (Python), LiveKit Agents, Silero VAD |
+| Ses I/O | `audio_io.py` içindeki full-duplex `sounddevice.Stream` |
+| Echo bastırma | `aec-audio-processing` ile referanslı AEC |
+| VAD | `sr.py` içindeki `Silero VAD` |
+| Interrupt | `utils.py` + `main.py` |
+| Diyalog akışı | `ASR -> LLM -> TTS` |
 
----
+## 4. Neden bu ayrım önemli?
 
-## 4. Neden "yüksek ses" senaryosunda bile çalışıyor?
+Genel sesli uygulama literatüründe WebRTC, mobil donanım AEC, Realtime API veya
+uçtan uca ses modeli gibi farklı tasarımlar anlatılabilir. Ancak bu projede bugün
+geçerli olan mimari:
 
-AEC'nin temel prensibi, bilinen çıkış sesini giriş sinyalinden çıkarmadan önce VAD'ı çalıştırmaktır. Eğer sistem kendi sesiyle kendi VAD'ını tetiklerse sonsuz sahte kesme döngüsü oluşur; bu yüzden AEC, VAD'dan önce mutlaka uygulanmalıdır.
+- Realtime API tabanlı tam-duplex bulut ses oturumu değildir
+- Semantic VAD kullanan sunucu tarafı bir akış değildir
+- mobil işletim sistemi AEC'sine bağımlı değildir
 
-Yüksek hoparlör durumlarındaki güvenilirlik ise şu üç önlemden gelir: AEC'nin adaptif filtresi ses seviyesi değiştiğinde kendini yeniden kalibre eder; minimum VAD segment uzunluğu kısa süreli yansımaları filtreler; Semantic VAD ise salt enerji yerine anlama bakarak karar verir.
+Bu repo üzerinde çalışırken güncel davranış, tuning ve teknik kararlar için ana
+referans daima `docs/LOCAL_AUDIO_AEC_ARCHITECTURE.md` olmalıdır.

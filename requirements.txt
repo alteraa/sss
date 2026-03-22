@@ -11,6 +11,8 @@ torchaudio
 
 # Target realtime audio stack
 sounddevice
-soundfile
 aec-audio-processing
-pyrnnoise
+
+# Optional extras intentionally omitted from default install:
+# - `pyrnnoise`: optional second-stage noise suppression experiments
+# - `soundfile`: optional file-based audio debug/export utilities

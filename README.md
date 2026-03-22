@@ -52,7 +52,12 @@ IDLE -> LISTENING -> PROCESSING -> SPEAKING
 
 Python `3.12+` önerilir.
 
+`aec-audio-processing` için Python `>= 3.11` gerekir.
+
 `Silero VAD` için `torch` ve `torchaudio` uyumlu CPU wheel olarak kurulmalıdır.
+`torchaudio` kodda doğrudan import edilmese de bu akış için runtime bağımlılığı olarak
+tutulur.
+
 Gerekli paketler `requirements.txt` içindedir.
 
 ## Minimum Gereksinimler
@@ -83,7 +88,13 @@ Bu uygulamanın şu anki çalışan hali için gerçekten gerekli parçalar:
 
 ### Not
 
-Şu anki aktif workflow için `pyrnnoise` ve `soundfile` zorunlu değildir.
+Şu anki aktif workflow için `requirements.txt` bilinçli olarak dar tutulur. Kodda
+aktif kullanılmayan paketler varsayılan kurulumdan çıkarılmıştır.
+
+Eklenebilecek özellikler:
+
+- `pyrnnoise`: AEC sonrasına opsiyonel ikinci aşama noise suppression katmanı eklemek için
+- `soundfile`: ileride dosya tabanlı ses debug/export veya offline analiz araçları eklemek için
 
 ## Detaylı Dokümanlar
 
@@ -92,17 +103,17 @@ Bu uygulamanın şu anki çalışan hali için gerçekten gerekli parçalar:
   teknik notlar.
 
 - `docs/chatgpt_app.md`
-  ChatGPT benzeri sesli deneyimin mimari referansı ve tasarım motivasyonu.
+  Genel sesli uygulama mimarisi notları; bu repo için birebir kaynak değil, arka plan
+  referansı.
 
 - `docs/FUTURE_DIRECTIONS.md`
-  Echo, interrupt ve ses işleme tarafında ileri geliştirme yönleri.
+  Yeni mimari sonrasında kalan tuning ve geliştirme yönleri.
 
 - `docs/GUIDE.md`
-  Ses işleme, echo cancellation ve düşük gecikmeli interrupt davranışı için araştırma
-  rehberi.
+  Mevcut AEC-first mimari sonrası araştırma ve ölçümleme rehberi.
 
 - `docs/echo_gain_adaptation_main_vs_high-mic-level.md`
-  Eski echo gain yaklaşımına dair tarihsel notlar.
+  Eski heuristic echo gain yaklaşımına dair tarihsel notlar.
 
 ## Kısa Not
 

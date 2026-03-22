@@ -1,138 +1,82 @@
 # Future Directions
 
-Bu doküman, `speech-to-speech` projesinde robotun hoparlörden kendi sesini mikrofondan duyup yanlış şekilde konuşmayı kesmesi (echo/feedback interrupt) sorununu çözmek ve gerçek-zamanlı (low-latency, düşük CPU) çalışmayı korumak için geliştirilebilecek yönleri toplar.
+Bu doküman, `docs/LOCAL_AUDIO_AEC_ARCHITECTURE.md` içinde tanımlanan yeni yerel ses
+mimarisi sonrasında kalan teknik iyileştirme alanlarını toplar. Odak artık "AEC nasıl
+eklenir?" değil, mevcut AEC-first yapıyı farklı cihaz ve ortam koşullarında daha
+güvenilir hale getirmektir.
 
-## Kısa Özet (Geçmişte Uygulananlar)
+## Güncel durum özeti
 
-### Whisper geçişi
-- Yerel Whisper modeli (`faster_whisper`) kaldırıldı.
-- Transkripsiyon OpenAI Whisper API (`model="whisper-1"`, `language="tr"`) ile yapılıyor (`sr.py`).
+- Ses I/O aynı process içinde `sounddevice.Stream` ile yürütülür
+- TTS referansı doğrudan playback buffer'ından AEC reverse stream'e verilir
+- Mikrofon tarafında `aec-audio-processing` ile temizlenmiş sinyal elde edilir
+- `Silero VAD` ve RMS tabanlı gate'ler temizlenmiş sinyal üstünde çalışır
+- `ffplay` tabanlı ayrı playback süreci artık aktif mimarinin parçası değildir
 
-### Silero VAD taşınması
-- Silero VAD modeli Torch Hub üzerinden indiriliyor (`torch.hub.load(..., source="github")`).
-- VAD giriş örnek boyutu uyumsuzluğu giderildi: 1536 örneklik chunk'lar 512 örneklik pencerelere bölünüp (son parça pad edilerek) confidence değerleri birleştiriliyor (`sr.py: vad_confidence`).
+## Yakın vadeli teknik yönler
 
-### ffplay sistem bağımlılığı
-- `ffplay` bulunamadığı için FFmpeg/`ffplay` kurulumunun gerekli olduğu belirlendi (`tts.py`).
+### 1) Cihaz bazlı AEC delay tuning
 
-### Interrupt (robot konuşurken kesme) mimarisi
-- `main.py` state machine: `IDLE -> LISTENING -> PROCESSING -> SPEAKING`.
-- `SPEAKING` sırasında grace süresi sonrası mikrofon chunk'ları `InterruptDetector.update()` ile değerlendirilip `tts_player.stop()` çağrılıyor.
+- `AUDIO_PROCESSOR_DELAY_MS` için farklı donanımlarda kısa sweep'ler yapılması
+- Hoparlör-mikrofon yerleşimine göre en stabil aralığın dokümante edilmesi
+- Gerekirse cihaz profili bazlı varsayılanlar tanımlanması
 
-### Echo yanlış interrupt azaltma denemeleri
-- `main.py`: `INTERRUPT_GRACE_PERIOD` boyunca interrupt detection kapatıldı; grace bitince baseline `freeze_baseline()` ile donduruldu.
-- `utils.py`: `InterruptDetector.reset()` içinde rolling pencere temizlenerek baseline'in yanlış şekilde geçmiş düşük seviyelerle etkilenmesi önlendi.
-- Eşik ayarları daha muhafazakar hale getirildi:
-  - `INTERRUPT_RMS_MULTIPLIER`: 1.5 -> 2.5
-  - `INTERRUPT_HOLD`: 2 -> 3
-  - `INTERRUPT_GRACE_PERIOD`: 0.8 -> 1.0
+### 2) Residual echo azaltma
 
-## Problem Tanımı (Teknik Kök Neden)
+- TTS sonrası kısa residual patlamaların loglanması
+- `POST_TTS_IGNORE_CHUNKS` ile gerçek kullanıcı başlangıcı arasındaki dengenin ölçülmesi
+- Gerekirse AEC sonrası isteğe bağlı ikinci aşama noise suppression katmanının eklenmesi
 
-- Hoparlör ses seviyesi yükseldikçe, TTS'den çıkan ses mikrofon sinyaline echo olarak yansır.
-- Mevcut interrupt detektörü iki koşulu birlikte arıyor:
-  - RMS enerji: `current_rms > frozen_baseline * INTERRUPT_RMS_MULTIPLIER`
-  - VAD: `current_vad > INTERRUPT_VAD_THRESHOLD`
-- Silero VAD hoparlör kaynaklı örüntülerde doygunluk/yanlış pozitif üretebildiğinde (`vad ~ 1.0`), RMS filtresi de echo nedeniyle sık sık tetiklenip `interrupt: human_speaking_while_robot` ortaya çıkıyor.
+### 3) Speech-start ve interrupt tuning
 
-## Gerçek-zamanlı (Low-Latency) Uygun Yöntemler - Öncelik Sırasıyla
+- `START_RMS_MULTIPLIER`, `MIN_START_RMS` ve `MAX_START_CREST_FACTOR` için ortam bazlı kalibrasyon
+- `INTERRUPT_RMS_MULTIPLIER`, `INTERRUPT_VAD_THRESHOLD`, `INTERRUPT_HOLD` ve `INTERRUPT_GRACE_PERIOD` değerlerinin yeniden karşılaştırılması
+- Yanlış pozitif ile geç kesme vakalarının ayrı ölçülmesi
 
-Aşağıdaki yöntemler gecikme ve hesaplama maliyeti açısından değerlendirilir. En ideali genellikle “echo’yu residual’e indirmek”tir; böylece VAD/RMS yanlış tetiklenmeyi azalır.
+### 4) Performans ve callback yükü
 
-### 1) Referanslı Echo Subtraction (Delay + Gain) [En ideal/En düşük gecikme]
+- Tekrarlayan `output underflow` görülürse callback içindeki iş yükünün profillenmesi
+- AEC ve ek DSP maliyeti büyürse processing işinin ayrı thread'e taşınmasının değerlendirilmesi
+- Uzun süreli çalışmada queue büyümesi ve gecikme birikiminin izlenmesi
 
-**Fikir:** Robotun hoparlörden çaldığı TTS sesi elinizde referans olarak var. Mikrofon sinyalinden uygun gecikmede ve ölçekle referansı çıkararak echo’yu bastırın.
+## Orta vadeli seçenekler
 
-- Gecikme tahmini: cross-correlation ile coarse delay.
-- Ölçekleme: kısa zamanlı gain tahmini (ör. envelope tabanlı) veya sabit bir başlangıç kazancı.
-- Çıkarma: `residual = mic - alpha * reference_delayed`
-- Residual üzerinde mevcut `InterruptDetector` (veya daha basit bir RMS gate) çalıştırılır.
+### 1) İsteğe bağlı ek noise suppression
 
-**Artılar**
-- Hesaplama çok hafif (chunk başına delay slicing + çıkarma + küçük gate).
-- VAD doygunluğuna rağmen RMS daha stabil hale gelebilir.
+`pyrnnoise` şu an aktif akışın zorunlu parçası değildir. Residual echo veya ortam
+gürültüsü belirli cihazlarda sorun çıkarıyorsa, AEC sonrası opsiyonel katman olarak
+yeniden değerlendirilmesi mantıklıdır.
 
-### 2) Kısa Taplı Adaptive Filter (NLMS/LMS tabanlı) [Hızlı ve sağlam]
+### 2) Daha güçlü speech/non-speech ayrımı
 
-**Fikir:** Delay+gain yetersizse, referans sinyalinden kısa FIR ile echo’yu daha iyi modelleyip çıkarmak.
+`Silero VAD` çoğu durumda yeterli olsa da çok gürültülü ortamlarda ek bir speech
+classifier veya daha seçici post-processing katmanı düşünülebilir.
 
-- NLMS/LMS: 16–64 tap gibi kısa filtrelerle gerçek-zamanlı öğrenme.
-- Güncelleme: her chunk başına veya her N frame.
-- Reference olarak TTS oynatma sinyalini (mümkünse PCM) kullanmak gerekir.
+### 3) Cihaz/ortam profilleri
 
-**Artılar**
-- Delay/jitter ve oda koşullarına daha dayanıklı.
+Farklı robot gövdeleri, hoparlör güçleri veya mikrofon yerleşimleri için:
 
-### 3) WebRTC Audio Processing APM (AEC3/NS/Gain Control) [En güçlü ama entegrasyon maliyeti]
+- gain seviyesi
+- delay ayarı
+- interrupt eşikleri
 
-**Fikir:** WebRTC’nin C/C++ tabanlı AEC/NS bileşenlerini entegre etmek.
+ayrı preset'ler halinde tutulabilir.
 
-- AEC: echo cancellation (robot sesini mikrofon girişinden bastırır)
-- NS: gürültü bastırma ile VAD/RMS stabilizasyonu
-- AGC: seviye kontrol
+## Artık birincil yol haritası olmayan başlıklar
 
-**Artılar**
-- Kalite genelde en iyisi.
-- CPU düşük olabilir (native implementasyon).
+Aşağıdaki konular bu repo için artık "ilk uygulanacak çözüm" değildir:
 
-**Eksiler**
-- Python entegrasyonu/kurulum eforu olabilir.
+- `ffplay` tabanlı playback ile echo yönetimi
+- saf delay+gain heuristic yaklaşımını ana çözüm yapmak
+- AEC'i daha sonra entegre edilecek ayrı bir gelecek işi olarak görmek
 
-### 4) Echo-Likelihood / Correlation gating (VAD’yi tamamlayıcı) [Düşük maliyet]
+Bu başlıklar ancak mevcut mimari yetersiz kalırsa alternatif deney veya ileri
+optimizasyon olarak değerlendirilebilir.
 
-**Fikir:** Mikrofon chunk’ının referans (TTS) ile gecikme-alanında benzerliğini ölçün.
+## Önerilen çalışma sırası
 
-- Örnek: normalized cross-correlation veya enerji benzerlik skoru.
-- Skor yüksekse “robot yankısı” olma ihtimali yüksektir => interrupt koşuluna ek bir kısıt koyun.
-
-**Örnek kural fikri**
-- Interrupt için:
-  - RMS > threshold
-  - VAD > threshold
-  - VE `echo_likelihood < limit`
-
-### 5) VAD/RMS kararını daha yankı-dirençli hale getirmek (post-processing)
-
-Mevcut sistemde `vad_confidence` max pooling ile birleşiyor. Echo durumunda bu max değer doygunluğa gidiyorsa, daha yankı-dirençli birleştirme denenebilir:
-
-- Max yerine average/trimmed-mean ile birleştirme
-- VAD confidence zaman üzerinde medyan filtresi / EMA ile smoothing
-- “Tek spike” bastırma: bir pencere içindeki varyans/enerji modülasyonu threshold’ları
-
-Bu yöntemler ucuzdur; AEC ile birlikte en iyi sonucu verir.
-
-### 6) Bant-kısıtlama / HPF (düşük maliyetli yardımcı)
-
-- Echo bazı bantlarda daha baskın olabilir.
-- Çok agresif olmadan:
-  - Hafif HPF (örn. 70–120 Hz) ile düşük frekans enerji azalımı
-  - Band-limited RMS ile threshold daha stabil hale getirilebilir
-
-### 7) Speaker verification / Embedding (son karar mekanizması)
-
-**Fikir:** Echo residual de VAD/RMS’i etkiliyorsa, “robot sesine benzer mi?” sorusunu embedding ile yanıtlayın.
-
-- Robot/TTS referansından embedding çıkarılır.
-- Mikrofon pencere embedding ile karşılaştırılır.
-- Benzerlik yüksekse interrupt engellenebilir.
-
-**Not:** Gerçek-zamanlı maliyet daha yüksek olabilir; yalnızca interrupt adayı oluştuğunda çalıştırmak daha doğru olur.
-
-## Ölçüm ve Tuning Prosedürü (Önerilen)
-
-### A) Gözlemlerle tuning
-- `DEBUG rms=... baseline=... thr=... vad=...` logları kullanılarak:
-  - interrupt’un RMS mi yoksa VAD mi ile tetiklendiği netleştirilmeli.
-
-### B) Baseline hesap güvenilirliği
-- Baseline rolling penceresinin reset esnasında temizlenmesi gibi önlemlerle baseline sızıntısı engellenmeli.
-
-## Sonraki Adım Önerisi (En düşük eforla en yüksek etki)
-
-1) TTS referansını elde edebiliyorsanız (PCM/WAV):
-   - Önce delay+gain subtraction prototipi.
-2) Ardından hata kalırsa:
-   - NLMS ile kısa taplı adaptive filter.
-3) En son olarak:
-   - WebRTC APM ile AEC entegrasyonu.
+1. Gerçek cihaz üstünde hoparlör/mikrofon seviye matrisi ile ölçüm al
+2. `AUDIO_PROCESSOR_DELAY_MS` ve interrupt eşiklerini kalibre et
+3. Residual echo devam ediyorsa opsiyonel ikinci aşama NS dene
+4. Gerekirse daha ağır classifier veya thread ayrımı gibi yapısal adımlara geç
 
